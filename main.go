@@ -6,6 +6,8 @@ import (
     "crypto/x509"
     "crypto/x509/pkix"
     "encoding/pem"
+    "errors"
+    "flag"
     "fmt"
     "io/ioutil"
     "math/big"
@@ -13,12 +15,11 @@ import (
     "time"
 )
 
-func generateCA() {
+func generateCA(certFilename string, keyFilename string) (*x509.Certificate, *rsa.PrivateKey, error) {
     // Generate 2048bit RSA Key
     key, err := rsa.GenerateKey(rand.Reader, 2048)
     if err != nil {
-        fmt.Fprintf(os.Stderr, "Cannot generate RSA key : %s\n", err)
-        os.Exit(1)
+        return nil, nil, errors.New(fmt.Sprintf("Cannot generate RSA key : %s", err))
     }
     fmt.Println("CA RSA Key generated.")
 
@@ -37,46 +38,41 @@ func generateCA() {
     }
     cert, err := x509.CreateCertificate(rand.Reader, &certTemplate, &certTemplate, key.Public(), key)
     if err != nil {
-        fmt.Fprintf(os.Stderr, "Cannot create CA certificate : %s\n", err)
-        os.Exit(1)
+        return nil, nil, errors.New(fmt.Sprintf("Cannot create CA certificate : %s", err))
     }
     fmt.Println("CA Certificate created.")
 
     // write CA Key
-    caKeyOut, err := os.OpenFile("ca.key.pem", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+    caKeyOut, err := os.OpenFile(keyFilename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
     if err != nil {
-        fmt.Fprintf(os.Stderr, "Cannot open file ca.key.pem : %s\n", err)
-        os.Exit(1)
+        return nil, nil, errors.New(fmt.Sprintf("Cannot open file %s : %s", keyFilename, err))
     }
     err = pem.Encode(caKeyOut, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
     if err != nil {
-        fmt.Fprintf(os.Stderr, "Cannot encode RSA key in PEM : %s\n", err)
-        os.Exit(1)
+        return nil, nil, errors.New(fmt.Sprintf("Cannot encode RSA key in PEM %s : %s", keyFilename, err))
     }
     err = caKeyOut.Close()
     if err != nil {
-        fmt.Fprintf(os.Stderr, "Cannot close ca.key.pem : %s\n", err)
-        os.Exit(1)
+        return nil, nil, errors.New(fmt.Sprintf("Cannot close %s : %s", keyFilename, err))
     }
-    fmt.Println("CA RSA Private Key written in ca.key.pem.")
+    fmt.Printf("CA RSA Private Key written in %s.\n", keyFilename)
 
     // Write CA Certificate
-    caCertOut, err := os.OpenFile("ca.cert.pem", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
+    caCertOut, err := os.OpenFile(certFilename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
     if err != nil {
-        fmt.Fprintf(os.Stderr, "Cannot open file ca.cert.pem : %s\n", err)
-        os.Exit(1)
+        return nil, nil, errors.New(fmt.Sprintf("Cannot open file %s : %s", keyFilename, err))
     }
     err = pem.Encode(caCertOut, &pem.Block{Type: "CERTIFICATE", Bytes: cert})
     if err != nil {
-        fmt.Fprintf(os.Stderr, "Cannot encode CA Certificate in PEM : %s\n", err)
-        os.Exit(1)
+        return nil, nil, errors.New(fmt.Sprintf("Cannot encode CA Certificate in PEM %s : %s", keyFilename, err))
     }
     err = caCertOut.Close()
     if err != nil {
-        fmt.Fprintf(os.Stderr, "Cannot close ca.cert.pem : %s\n", err)
-        os.Exit(1)
+        return nil, nil, errors.New(fmt.Sprintf("Cannot close %s : %s", keyFilename, err))
     }
-    fmt.Println("CA Certificate written in ca.cert.pem.")
+    fmt.Printf("CA Certificate written in %s.\n", certFilename)
+
+    return &certTemplate, key, nil
 }
 
 func generateServerCertificate() {
@@ -139,6 +135,10 @@ func generateServerCertificate() {
     }
     fmt.Println("Server certificate signing request written in server.csr.pem.")
 
+
+
+
+
     caCertFile, err := ioutil.ReadFile("ca.cert.pem")
     if err != nil {
         fmt.Fprintf(os.Stderr, "Cannot read ca.cert.pem : %s\n", err)
@@ -155,6 +155,10 @@ func generateServerCertificate() {
         os.Exit(1)
     }
     fmt.Println("CA Certificate retrieved.")
+
+
+
+
 
     caKeyFile, err := ioutil.ReadFile("ca.key.pem")
     if err != nil {
@@ -177,6 +181,9 @@ func generateServerCertificate() {
         os.Exit(1)
     }
     fmt.Println("CA Key retrieved.")
+
+
+
 
     certDnsNames := make([]string, len(certRequestTemplate.DNSNames)/*, (cap(certRequestTemplate.DNSNames)+1)*2*/)
     copy(certDnsNames, certRequestTemplate.DNSNames)
@@ -221,7 +228,104 @@ func generateServerCertificate() {
     fmt.Println("Server certificate written in server.cert.pem.")
 }
 
+func parseCaCert(filepath string) (*x509.Certificate, error) {
+    caCertFile, err := ioutil.ReadFile(filepath)
+    if err != nil {
+        return nil, errors.New(fmt.Sprintf("Cannot read %s : %s", filepath, err))
+    }
+    caCertPem, _ := pem.Decode(caCertFile)
+    if caCertPem == nil {
+        return nil, errors.New(fmt.Sprintf("Failed to PEM decode %s.", filepath))
+    }
+    caCert, err := x509.ParseCertificate(caCertPem.Bytes)
+    if err != nil {
+        return nil, errors.New(fmt.Sprintf("Cannot parse Certificate %s : %s", filepath, err))
+    }
+
+    return caCert, nil
+}
+func parseRsaKey(filepath string, password *string) (*rsa.PrivateKey, error) {
+    caKeyFile, err := ioutil.ReadFile(filepath)
+    if err != nil {
+        return nil, errors.New(fmt.Sprintf("Cannot read %s : %s", filepath, err))
+    }
+    caKeyPem, _ := pem.Decode(caKeyFile)
+    if caKeyPem == nil {
+        return nil, errors.New(fmt.Sprintf("Failed to PEM decode %s.", filepath))
+    }
+    var der []byte
+    if password != nil {
+        der, err = x509.DecryptPEMBlock(caKeyPem, []byte(*password))
+        if err != nil {
+            return nil, errors.New(fmt.Sprintf("Cannot decrypt RSA Key %s : %s", filepath, err))
+        }
+    } else {
+        der = caKeyPem.Bytes
+    }
+    caKey, err := x509.ParsePKCS1PrivateKey(der)
+    if err != nil {
+        return nil, errors.New(fmt.Sprintf("Cannot parse RSA Key %s (missing password ?) : %s", filepath, err))
+    }
+
+    return caKey, nil
+}
+
 func main() {
-    generateCA()
+    wantToGenerateCa := flag.Bool("gen-ca", false, "Would you want to generate a CA ? The key and certificate will be created at --ca-key and --ca-cert paths.")
+    caCertFilename := flag.String("ca-cert", "", "Path to your existing or destination CA Certificate PEM (e.g., /path/to/ca.cert.pem).")
+    caKeyFilename := flag.String("ca-key", "", "Path to your existing or destination CA Key PEM (e.g., /path/to/ca.key.pem). Use the env CA_KEY_PASSWORD if it's encrypted, otherwise leave it blank.")
+    serverCertFilename := flag.String("server-cert", "", "Path to your existing Server Certificate PEM (e.g., /path/to/server.cert.pem).")
+    flag.Parse()
+
+    if len(os.Args) <= 1 { // only program path
+        flag.Usage()
+        os.Exit(0)
+    }
+
+    fmt.Println(*serverCertFilename)
+
+    var caCert *x509.Certificate = nil
+    var caKey *rsa.PrivateKey = nil
+    var err error
+    if *wantToGenerateCa {
+        if len(*caCertFilename) == 0 {
+            *caCertFilename = "ca.cert.pem"
+        }
+        if len(*caKeyFilename) == 0 {
+            *caKeyFilename = "ca.key.pem"
+        }
+        fmt.Printf("Generating CA Certificate %s and CA Key %s...\n", *caCertFilename, *caKeyFilename)
+
+        caCert, caKey, err = generateCA(*caCertFilename, *caKeyFilename)
+        if err != nil {
+            fmt.Fprintf(os.Stderr, "Cannot generate CA : %s\n", err)
+            os.Exit(1)
+        }
+
+        fmt.Printf("CA generated.\nCertificate : %s. Key : %s.\n", *caCertFilename, *caKeyFilename)
+    } else if len(*caCertFilename) != 0 && len(*caKeyFilename) != 0 {
+        fmt.Println("Custom CA Certificate and CA Key given : try to parse them...")
+
+        caCert, err = parseCaCert(*caCertFilename)
+        if err != nil {
+            fmt.Fprintf(os.Stderr, "Cannot parse custom CA Certificate : %s\n", err)
+            os.Exit(1)
+        }
+
+        caKeyPassword := os.Getenv("CA_KEY_PASSWORD")
+        var password *string = nil
+        if len(caKeyPassword) > 0 {
+            password = &caKeyPassword
+        }
+        caKey, err = parseRsaKey(*caKeyFilename, password)
+        if err != nil {
+            fmt.Fprintf(os.Stderr, "Cannot parse custom CA Key : %s\n", err)
+            os.Exit(1)
+        }
+
+        fmt.Println("Custom CA Certificate and CA Key parsed.")
+    }
+    fmt.Println(caCert.Subject.CommonName, caKey.Public())
+
     generateServerCertificate()
 }
