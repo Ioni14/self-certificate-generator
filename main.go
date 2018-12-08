@@ -77,6 +77,7 @@ func generateCA(certFilename string, keyFilename string) (*x509.Certificate, *rs
 }
 
 func generateServerCertificate(
+    serial *big.Int,
     certFilename string,
     /*csrFilename string,*/
     keyFilename string,
@@ -146,7 +147,7 @@ func generateServerCertificate(
         PublicKey: certRequestTemplate.PublicKey,
         PublicKeyAlgorithm: certRequestTemplate.PublicKeyAlgorithm,
 
-        SerialNumber: big.NewInt(1),
+        SerialNumber: serial,
         Issuer: caCert.Subject,
         Subject: certRequestTemplate.Subject,
         NotBefore: time.Now(),
@@ -228,11 +229,17 @@ func main() {
     serverCertFilename := flag.String("server-cert", "", "Path to your existing or destination Server Certificate PEM (e.g., /path/to/server.cert.pem).")
     serverKeyFilename := flag.String("server-key", "", "Path to your existing or destination Server RSA Key PEM (e.g., /path/to/server.key.pem).")
     serverDomainsStr := flag.String("server-domains", "", "Comma separated domains of the server certificate (e.g., example.com,*.example.com).")
+    serverCertSerial := flag.Int64("server-cert-serial", 0, "Custom serial for the server certificate.")
     flag.Parse()
 
     if len(os.Args) <= 1 { // only program path
         flag.Usage()
         os.Exit(0)
+    }
+
+    if len(*serverDomainsStr) == 0 {
+        fmt.Fprintf(os.Stderr, "You must pass server domain(s) via --server-domains argument.\n")
+        os.Exit(1)
     }
 
     var caCert *x509.Certificate = nil
@@ -282,26 +289,32 @@ func main() {
         os.Exit(1)
     }
 
-    // want to generate a new server certificate ?
+    // Generate a new server certificate
     if len(*serverCertFilename) == 0 {
         *serverCertFilename = "server.cert.pem"
     }
     if len(*serverKeyFilename) == 0 {
         *serverKeyFilename = "server.key.pem"
     }
+    serverDomains := strings.Split(*serverDomainsStr, ",")
 
-    var serverDomains []string
-    if len(*serverDomainsStr) > 0 {
-        serverDomains = strings.Split(*serverDomainsStr, ",")
+    // Does Server certificate exist ?
+    serial := big.NewInt(1)
+    if *serverCertSerial > 0 {
+        serial.SetInt64(*serverCertSerial)
+    } else {
+        serverCert, err := parseCert(*serverCertFilename)
+        if err == nil { // exist
+            serial.SetInt64(serverCert.SerialNumber.Int64() + 1)
+        }
     }
+
     fmt.Printf("Generating Server certificate %s and Server key %s...\n", *serverCertFilename, *serverKeyFilename)
-    _, _, err = generateServerCertificate(*serverCertFilename, *serverKeyFilename, serverDomains, caCert, caKey)
+    _, _, err = generateServerCertificate(serial, *serverCertFilename, *serverKeyFilename, serverDomains, caCert, caKey)
     if err != nil {
         fmt.Fprintf(os.Stderr, "Cannot generate server certificate : %s.\n", err)
         os.Exit(1)
     }
 
-    fmt.Printf("Server certificate generated.\nCertificate : %s. Key : %s.\n", *caCertFilename, *caKeyFilename)
-
-    // want to update an existing server certificate ?
+    fmt.Printf("Server certificate generated.\nCertificate : %s. Key : %s.\n", *serverCertFilename, *serverKeyFilename)
 }
