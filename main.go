@@ -26,15 +26,16 @@ func generateCA(certFilename string, keyFilename string) (*x509.Certificate, *rs
 
     // Generate CA Certificate
     certTemplate := x509.Certificate{
-        SerialNumber: big.NewInt(1),
+        SerialNumber: generateNewSerialNumber(),
         Subject: pkix.Name{
-            Organization: []string{"Self Certificate Generator"},
-            CommonName: "Root CA",
+            Organization:       []string{"Self Certificate Generator"},
+            OrganizationalUnit: []string{""},
+            CommonName:         "SCG Root CA",
         },
-        NotBefore: time.Now(),
-        NotAfter: time.Now().Add(10 * 365 * 24 * time.Hour), // 10 years
-        KeyUsage: x509.KeyUsageDigitalSignature|x509.KeyUsageCRLSign|x509.KeyUsageCertSign,
-        IsCA: true,
+        NotBefore:             time.Now(),
+        NotAfter:              time.Now().Add(20 * 365 * 24 * time.Hour), // 20 years
+        KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCRLSign | x509.KeyUsageCertSign,
+        IsCA:                  true,
         BasicConstraintsValid: true,
     }
     cert, err := x509.CreateCertificate(rand.Reader, &certTemplate, &certTemplate, key.Public(), key)
@@ -79,11 +80,10 @@ func generateCA(certFilename string, keyFilename string) (*x509.Certificate, *rs
 func generateServerCertificate(
     serial *big.Int,
     certFilename string,
-    /*csrFilename string,*/
     keyFilename string,
     domains []string,
     caCert *x509.Certificate,
-    caKey *rsa.PrivateKey) (*rsa.PrivateKey, /**x509.CertificateRequest, */*x509.Certificate, error) {
+    caKey *rsa.PrivateKey) (*rsa.PrivateKey, *x509.Certificate, error) {
     if len(domains) == 0 {
         return nil, nil, errors.New(fmt.Sprintf("No domains provided for generating server certificate."))
     }
@@ -110,51 +110,19 @@ func generateServerCertificate(
     }
     fmt.Printf("Server RSA Private Key written in %s.\n", keyFilename)
 
-    // Create Server CSR
-    certRequestTemplate := x509.CertificateRequest{
-        Subject: pkix.Name{
-            Organization: []string{"Self Certificate Generator"},
-            CommonName: domains[0],
-        },
-        DNSNames: domains,
-    }
-    // certRequest, err := x509.CreateCertificateRequest(rand.Reader, &certRequestTemplate, key)
-    // if err != nil {
-    //     return nil, nil, errors.New(fmt.Sprintf("Cannot create Server certificate signing request : %s", err))
-    // }
-    // fmt.Println("Server certificate signing request created.")
-
-    // Write Server CSR
-    // serverCertRequestOut, err := os.OpenFile(csrFilename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
-    // if err != nil {
-    //     return nil, nil, errors.New(fmt.Sprintf("Cannot open file %s : %s", csrFilename, err))
-    // }
-    // err = pem.Encode(serverCertRequestOut, &pem.Block{Type: "CERTIFICATE REQUEST", Bytes: certRequest})
-    // if err != nil {
-    //     return nil, nil, errors.New(fmt.Sprintf("Cannot encode Server certificate signing request in PEM %s : %s", csrFilename, err))
-    // }
-    // err = serverCertRequestOut.Close()
-    // if err != nil {
-    //     return nil, nil, errors.New(fmt.Sprintf("Cannot close %s : %s", csrFilename, err))
-    // }
-    // fmt.Printf("Server certificate signing request written in %s.\n", csrFilename)
-
-    certDnsNames := make([]string, len(certRequestTemplate.DNSNames))
-    copy(certDnsNames, certRequestTemplate.DNSNames)
     serverCertTemplate := x509.Certificate{
-        Signature: certRequestTemplate.Signature,
-        SignatureAlgorithm: certRequestTemplate.SignatureAlgorithm,
-        PublicKey: certRequestTemplate.PublicKey,
-        PublicKeyAlgorithm: certRequestTemplate.PublicKeyAlgorithm,
-
         SerialNumber: serial,
-        Issuer: caCert.Subject,
-        Subject: certRequestTemplate.Subject,
-        NotBefore: time.Now(),
-        NotAfter: time.Now().Add(10 * 365 * 24 * time.Hour), // 10 years
-        KeyUsage: x509.KeyUsageDigitalSignature|x509.KeyUsageKeyEncipherment,
-        ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-        DNSNames: certDnsNames,
+        Issuer:       caCert.Subject,
+        Subject: pkix.Name{
+            Organization:       []string{"Self Certificate Generator"},
+            OrganizationalUnit: []string{""},
+            CommonName:         domains[0],
+        },
+        NotBefore:    time.Now(),
+        NotAfter:     time.Now().Add(10 * 365 * 24 * time.Hour), // 10 years
+        KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+        ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+        DNSNames: domains,
     }
     serverCert, err := x509.CreateCertificate(rand.Reader, &serverCertTemplate, caCert, key.Public(), caKey)
     if err != nil {
@@ -177,7 +145,7 @@ func generateServerCertificate(
     }
     fmt.Printf("Server certificate written in %s.\n", certFilename)
 
-    return key, /*&certRequestTemplate, */&serverCertTemplate, nil
+    return key, &serverCertTemplate, nil
 }
 
 func parseCert(filepath string) (*x509.Certificate, error) {
@@ -220,6 +188,19 @@ func parseRsaKey(filepath string, password *string) (*rsa.PrivateKey, error) {
     }
 
     return caKey, nil
+}
+
+func generateNewSerialNumber() *big.Int {
+    serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128)) // [0, 2^128[
+    if err != nil || serial.Sign() <= 0 {
+        if err != nil {
+            fmt.Printf("Warning : failed to generate a random serial number : %s. It will be set to 1, consider use --server-cert-serial arg.\n", err)
+        }
+
+        return big.NewInt(1)
+    }
+
+    return serial
 }
 
 func main() {
@@ -298,15 +279,9 @@ func main() {
     }
     serverDomains := strings.Split(*serverDomainsStr, ",")
 
-    // Does Server certificate exist ?
-    serial := big.NewInt(1)
+    serial := generateNewSerialNumber()
     if *serverCertSerial > 0 {
         serial.SetInt64(*serverCertSerial)
-    } else {
-        serverCert, err := parseCert(*serverCertFilename)
-        if err == nil { // exist
-            serial.SetInt64(serverCert.SerialNumber.Int64() + 1)
-        }
     }
 
     fmt.Printf("Generating Server certificate %s and Server key %s...\n", *serverCertFilename, *serverKeyFilename)
